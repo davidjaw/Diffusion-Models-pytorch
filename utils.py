@@ -7,6 +7,11 @@ from torch.utils.data import DataLoader
 
 
 def plot_images(images):
+    """
+    將多張圖像並排顯示。
+    參數:
+    images (Tensor): 要顯示的圖像集合，通常是批次處理的圖像資料。
+    """
     plt.figure(figsize=(32, 32))
     plt.imshow(torch.cat([
         torch.cat([i for i in images.cpu()], dim=-1),
@@ -15,6 +20,13 @@ def plot_images(images):
 
 
 def save_images(images, path, **kwargs):
+    """
+    將圖像批保存到指定路徑。
+    參數:
+    images (Tensor): 要保存的圖像資料。
+    path (str): 圖像保存的路徑。
+    kwargs: 額外的參數，如網格佈局的行列數。
+    """
     grid = torchvision.utils.make_grid(images, **kwargs)
     ndarr = grid.permute(1, 2, 0).to('cpu').numpy()
     im = Image.fromarray(ndarr)
@@ -22,6 +34,13 @@ def save_images(images, path, **kwargs):
 
 
 def get_data(args):
+    """
+    根據給定參數載入並返回資料載入器。
+    參數:
+    args: 包含配置如圖像尺寸、資料路徑等的命名空間。
+    返回:
+    dataloader: 數據載入器。
+    """
     transforms = torchvision.transforms.Compose([
         torchvision.transforms.CenterCrop(140),
         torchvision.transforms.Resize(80),  # args.image_size + 1/4 *args.image_size
@@ -37,6 +56,11 @@ def get_data(args):
 
 
 def setup_logging(run_name):
+    """
+    根據運行名稱設置日誌和結果存儲的目錄結構。
+    參數:
+    run_name (str): 運行實例的名稱。
+    """
     os.makedirs("models", exist_ok=True)
     os.makedirs("results", exist_ok=True)
     os.makedirs(os.path.join("models", run_name), exist_ok=True)

@@ -1,39 +1,16 @@
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-class EMA:
-    def __init__(self, beta):
-        super().__init__()
-        self.beta = beta
-        self.step = 0
-
-    def update_model_average(self, ma_model, current_model):
-        for current_params, ma_params in zip(current_model.parameters(), ma_model.parameters()):
-            old_weight, up_weight = ma_params.data, current_params.data
-            ma_params.data = self.update_average(old_weight, up_weight)
-
-    def update_average(self, old, new):
-        if old is None:
-            return new
-        return old * self.beta + (1 - self.beta) * new
-
-    def step_ema(self, ema_model, model, step_start_ema=2000):
-        if self.step < step_start_ema:
-            self.reset_parameters(ema_model, model)
-            self.step += 1
-            return
-        self.update_model_average(ema_model, model)
-        self.step += 1
-
-    def reset_parameters(self, ema_model, model):
-        ema_model.load_state_dict(model.state_dict())
-
-
 class SelfAttention(nn.Module):
     def __init__(self, channels, size):
+        """
+        初始化自注意力模組。
+        參數:
+        channels (int): 輸入和輸出的通道數。
+        size (int): 特徵圖的尺寸。
+        """
         super(SelfAttention, self).__init__()
         self.channels = channels
         self.size = size
@@ -47,16 +24,29 @@ class SelfAttention(nn.Module):
         )
 
     def forward(self, x):
+        # 將影像轉換成形狀為 (B, H*W, C) 的張量
         x = x.view(-1, self.channels, self.size * self.size).swapaxes(1, 2)
+        # 進行 normalization 和自注意力運算
         x_ln = self.ln(x)
         attention_value, _ = self.mha(x_ln, x_ln, x_ln)
+        # 將自注意力運算的結果與原始輸入相加
         attention_value = attention_value + x
+        # 進行 Feed Forward 運算
         attention_value = self.ff_self(attention_value) + attention_value
+        # 將結果轉換回原始形狀
         return attention_value.swapaxes(2, 1).view(-1, self.channels, self.size, self.size)
 
 
 class DoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels, mid_channels=None, residual=False):
+        """
+        初始化兩次卷積操作模組，可選擇使用殘差連接。
+        參數:
+        in_channels (int): 輸入通道數。
+        out_channels (int): 輸出通道數。
+        mid_channels (int, optional): 中間通道數。默認為 out_channels。
+        residual (bool): 是否使用殘差連接。
+        """
         super().__init__()
         self.residual = residual
         if not mid_channels:
@@ -71,6 +61,7 @@ class DoubleConv(nn.Module):
 
     def forward(self, x):
         if self.residual:
+            # 如果使用殘差連接，則將輸入與卷積結果相加
             return F.gelu(x + self.double_conv(x))
         else:
             return self.double_conv(x)
@@ -78,13 +69,19 @@ class DoubleConv(nn.Module):
 
 class Down(nn.Module):
     def __init__(self, in_channels, out_channels, emb_dim=256):
+        """
+        初始化下採樣模組。
+        參數:
+        in_channels (int): 輸入通道數。
+        out_channels (int): 輸出通道數。
+        emb_dim (int): 嵌入維度，用於額外的特徵融合。
+        """
         super().__init__()
         self.maxpool_conv = nn.Sequential(
             nn.MaxPool2d(2),
             DoubleConv(in_channels, in_channels, residual=True),
             DoubleConv(in_channels, out_channels),
         )
-
         self.emb_layer = nn.Sequential(
             nn.SiLU(),
             nn.Linear(
@@ -101,6 +98,14 @@ class Down(nn.Module):
 
 class Up(nn.Module):
     def __init__(self, in_channels, out_channels, emb_dim=256):
+        """
+        前向傳播。
+        參數:
+        x (Tensor): 輸入的特徵。
+        t (Tensor): 額外的時間或條件嵌入。
+        返回:
+        經過下採樣和特徵融合後的特徵。
+        """
         super().__init__()
 
         self.up = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
@@ -108,7 +113,6 @@ class Up(nn.Module):
             DoubleConv(in_channels, in_channels, residual=True),
             DoubleConv(in_channels, out_channels, in_channels // 2),
         )
-
         self.emb_layer = nn.Sequential(
             nn.SiLU(),
             nn.Linear(
@@ -127,6 +131,14 @@ class Up(nn.Module):
 
 class UNet(nn.Module):
     def __init__(self, c_in=3, c_out=3, time_dim=256, device="cuda"):
+        """
+        初始化U-Net網路。
+        參數:
+        c_in (int): 輸入圖像通道數。
+        c_out (int): 輸出圖像通道數。
+        time_dim (int): 時間維度，用於生成位置編碼。
+        device (str): 計算設備。
+        """
         super().__init__()
         self.device = device
         self.time_dim = time_dim
@@ -184,80 +196,3 @@ class UNet(nn.Module):
         x = self.sa6(x)
         output = self.outc(x)
         return output
-
-
-class UNet_conditional(nn.Module):
-    def __init__(self, c_in=3, c_out=3, time_dim=256, num_classes=None, device="cuda"):
-        super().__init__()
-        self.device = device
-        self.time_dim = time_dim
-        self.inc = DoubleConv(c_in, 64)
-        self.down1 = Down(64, 128)
-        self.sa1 = SelfAttention(128, 32)
-        self.down2 = Down(128, 256)
-        self.sa2 = SelfAttention(256, 16)
-        self.down3 = Down(256, 256)
-        self.sa3 = SelfAttention(256, 8)
-
-        self.bot1 = DoubleConv(256, 512)
-        self.bot2 = DoubleConv(512, 512)
-        self.bot3 = DoubleConv(512, 256)
-
-        self.up1 = Up(512, 128)
-        self.sa4 = SelfAttention(128, 16)
-        self.up2 = Up(256, 64)
-        self.sa5 = SelfAttention(64, 32)
-        self.up3 = Up(128, 64)
-        self.sa6 = SelfAttention(64, 64)
-        self.outc = nn.Conv2d(64, c_out, kernel_size=1)
-
-        if num_classes is not None:
-            self.label_emb = nn.Embedding(num_classes, time_dim)
-
-    def pos_encoding(self, t, channels):
-        inv_freq = 1.0 / (
-            10000
-            ** (torch.arange(0, channels, 2, device=self.device).float() / channels)
-        )
-        pos_enc_a = torch.sin(t.repeat(1, channels // 2) * inv_freq)
-        pos_enc_b = torch.cos(t.repeat(1, channels // 2) * inv_freq)
-        pos_enc = torch.cat([pos_enc_a, pos_enc_b], dim=-1)
-        return pos_enc
-
-    def forward(self, x, t, y):
-        t = t.unsqueeze(-1).type(torch.float)
-        t = self.pos_encoding(t, self.time_dim)
-
-        if y is not None:
-            t += self.label_emb(y)
-
-        x1 = self.inc(x)
-        x2 = self.down1(x1, t)
-        x2 = self.sa1(x2)
-        x3 = self.down2(x2, t)
-        x3 = self.sa2(x3)
-        x4 = self.down3(x3, t)
-        x4 = self.sa3(x4)
-
-        x4 = self.bot1(x4)
-        x4 = self.bot2(x4)
-        x4 = self.bot3(x4)
-
-        x = self.up1(x4, x3, t)
-        x = self.sa4(x)
-        x = self.up2(x, x2, t)
-        x = self.sa5(x)
-        x = self.up3(x, x1, t)
-        x = self.sa6(x)
-        output = self.outc(x)
-        return output
-
-
-if __name__ == '__main__':
-    # net = UNet(device="cpu")
-    net = UNet_conditional(num_classes=10, device="cpu")
-    print(sum([p.numel() for p in net.parameters()]))
-    x = torch.randn(3, 3, 64, 64)
-    t = x.new_tensor([500] * x.shape[0]).long()
-    y = x.new_tensor([1] * x.shape[0]).long()
-    print(net(x, t, y).shape)
