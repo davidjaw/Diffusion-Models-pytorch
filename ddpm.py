@@ -8,6 +8,7 @@ from utils import *
 from modules import UNet
 import logging
 from torch.utils.tensorboard import SummaryWriter
+from lion_pytorch import Lion
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s: %(message)s", level=logging.INFO, datefmt="%I:%M:%S")
 
@@ -37,7 +38,7 @@ class Diffusion:
         return torch.randint(low=1, high=self.noise_steps, size=(n,))
 
     def sample(self, model, n):
-        logging.info(f"Sampling {n} new images....")
+        logging.info(f"Sampling {n} new images with DDPM....")
         model.eval()
         with torch.no_grad():
             x = torch.randn((n, 3, self.img_size, self.img_size)).to(self.device)
@@ -63,14 +64,18 @@ def train(args):
     device = args.device
     dataloader = get_data(args)
     model = UNet().to(device)
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr)
+    optimizer = Lion(model.parameters(), lr=args.lr)
     mse = nn.MSELoss()
-    diffusion = Diffusion(img_size=args.image_size, device=device)
+    diffusion = Diffusion(img_size=args.image_size, device=device, noise_steps=args.noise_steps)
     logger = SummaryWriter(os.path.join("runs", args.run_name))
-    l = len(dataloader)
-
+    lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    best_loss = 100
+    # Early stop 相關變數
+    early_stop_counter = 0
+    last_epoch_loss = 100
     for epoch in range(args.epochs):
         logging.info(f"Starting epoch {epoch}:")
+        epoch_running_loss = None
         pbar = tqdm(dataloader)
         for i, (images, _) in enumerate(pbar):
             images = images.to(device)
@@ -78,17 +83,28 @@ def train(args):
             x_t, noise = diffusion.noise_images(images, t)
             predicted_noise = model(x_t, t)
             loss = mse(noise, predicted_noise)
-
+            epoch_running_loss = loss.item() if epoch_running_loss is None else loss.item() * .9 + epoch_running_loss * .1
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-
-            pbar.set_postfix(MSE=loss.item())
-            logger.add_scalar("MSE", loss.item(), global_step=epoch * l + i)
-
-        sampled_images = diffusion.sample(model, n=images.shape[0])
-        save_images(sampled_images, os.path.join("results", args.run_name, f"{epoch}.jpg"))
-        torch.save(model.state_dict(), os.path.join("models", args.run_name, f"ckpt.pt"))
+            pbar.set_postfix(MSE=epoch_running_loss)
+        lr_scheduler.step()
+        logger.add_scalar("Loss", epoch_running_loss, epoch)
+        # 每 10 個 epochs 儲存模型
+        if epoch % 10 == 0:
+            sampled_images = diffusion.sample(model, n=16)
+            save_images(sampled_images, os.path.join("results", args.run_name, f"{epoch}.jpg"))
+            torch.save(model.state_dict(), os.path.join("models", args.run_name, f"{epoch}.pt"))
+        # 本次 epoch 的 loss 比最佳 loss 還要低, 則儲存模型
+        if epoch_running_loss < best_loss:
+            best_loss = epoch_running_loss
+            torch.save(model.state_dict(), os.path.join("models", args.run_name, f"best.pt"))
+        # 透過確認當前 epoch 的 loss 是否比上一個 epoch 的 loss 還要大, 來判斷是否提早停止訓練
+        early_stop_counter = early_stop_counter + 1 if epoch_running_loss > last_epoch_loss else 0
+        if early_stop_counter >= 10:
+            logging.info("損失函數已經連續 10 個 epochs 都沒有下降, 提早停止訓練")
+            torch.save(model.state_dict(), os.path.join("models", args.run_name, f"last.pt"))
+            break
 
 
 def launch():
@@ -96,12 +112,14 @@ def launch():
     parser = argparse.ArgumentParser()
     args = parser.parse_args()
     args.run_name = "DDPM_Uncondtional"
-    args.epochs = 500
+    args.epochs = 1000
     args.batch_size = 12
     args.image_size = 64
-    args.dataset_path = r"C:\Users\dome\datasets\landscape_img_folder"
+    args.dataset_path = r"G:\dataset\CelebA"
     args.device = "cuda"
     args.lr = 3e-4
+    args.num_sample = 2000
+    args.noise_steps = 700
     train(args)
 
 
