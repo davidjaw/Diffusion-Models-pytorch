@@ -1,7 +1,7 @@
 import torch
 from ddpm import Diffusion
 from utils import get_data, save_images
-from modules import UNet
+from network import UNet
 import os
 
 
